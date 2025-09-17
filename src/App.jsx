@@ -226,7 +226,7 @@ const saveAppointmentData = async (data, userEmail, fileName, setSaveStatus = nu
         name: fileName || 'Uploaded Data',
         uploaded_by: (await supabase.auth.getUser()).data.user?.id,
         uploaded_by_email: userEmail,
-        total_records: sanitizedData.length
+        record_count: sanitizedData.length
       });
     
     if (datasetError) throw datasetError;
@@ -1115,7 +1115,7 @@ const App = () => {
         if (user && validData.length > 0) {
           console.log('📁 Immediately saving uploaded data as shared data...');
           try {
-            const success = await saveSharedData(validData, user.email, setSaveStatus);
+            const success = await saveAppointmentData(validData, user.email, file.name, setSaveStatus);
             if (success) {
               setDataUploadedBy(user.email);
               setDataUploadedAt(new Date().toLocaleDateString());
@@ -1197,7 +1197,7 @@ const App = () => {
     if (user && rawData.length > 0) {
       const saveTimer = setTimeout(() => {
         console.log('💾 Auto-saving shared data...');
-        saveSharedData(rawData, user.email, setSaveStatus);
+        saveAppointmentData(rawData, user.email, uploadedFileName || 'Auto Save', setSaveStatus);
       }, 3000); // Save 3 seconds after data changes
 
       return () => clearTimeout(saveTimer);
@@ -1236,7 +1236,7 @@ const App = () => {
         sampleRecord: rawData[0]
       });
       
-      const success = await saveSharedData(rawData, user.email, setSaveStatus);
+      const success = await saveAppointmentData(rawData, user.email, uploadedFileName || 'Manual Save', setSaveStatus);
       if (success) {
         setDataUploadedBy(user.email);
         setDataUploadedAt(new Date().toLocaleDateString());
