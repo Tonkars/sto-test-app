@@ -242,11 +242,13 @@ const saveAppointmentData = async (data, userEmail, fileName, setSaveStatus = nu
     const datasetId = crypto.randomUUID();
     
     // First, clear any existing appointments (for shared model)
+    console.log('🗑️ Clearing existing appointments and datasets...');
     await supabase.from('appointments').delete().neq('id', '00000000-0000-0000-0000-000000000000');
     await supabase.from('appointment_datasets').delete().neq('id', '00000000-0000-0000-0000-000000000000');
     
-    // Create dataset record
-    const { error: datasetError } = await supabase
+    // Create dataset record first
+    console.log('📁 Creating dataset record with ID:', datasetId);
+    const { error: datasetError, data: datasetResult } = await supabase
       .from('appointment_datasets')
       .insert({
         id: datasetId,
@@ -254,16 +256,22 @@ const saveAppointmentData = async (data, userEmail, fileName, setSaveStatus = nu
         uploaded_by: (await supabase.auth.getUser()).data.user?.id,
         uploaded_by_email: userEmail,
         record_count: sanitizedData.length
-      });
+      })
+      .select();
     
-    if (datasetError) throw datasetError;
+    if (datasetError) {
+      console.error('❌ Dataset creation failed:', datasetError);
+      throw datasetError;
+    }
+    
+    console.log('✅ Dataset created successfully:', datasetResult[0]);
     
     // Get current user ID once
     const currentUser = await supabase.auth.getUser();
     const currentUserId = currentUser.data.user?.id;
     
     // Transform array data into individual appointment records
-    const appointmentRecords = sanitizedData.map(row => {
+    const appointmentRecords = sanitizedData.map((row, index) => {
       // Parse Greek date
       const parseGreekDate = (dateStr) => {
         if (!dateStr) return null;
@@ -279,7 +287,7 @@ const saveAppointmentData = async (data, userEmail, fileName, setSaveStatus = nu
         return null;
       };
       
-      return {
+      const record = {
         dataset_id: datasetId,
         user_name: row['Χρήστης δημιουργίας'] || row['Χρήστης_δημιουργίας'] || row['User'] || '',
         store_name: row['Υποκατάστημα'] || row['Store'] || row['Κατάστημα'] || '',
@@ -289,17 +297,47 @@ const saveAppointmentData = async (data, userEmail, fileName, setSaveStatus = nu
         uploaded_by: currentUserId,
         uploaded_by_email: userEmail
       };
-    }).filter(record => record.user_name && record.creation_date_text); // Only valid records
+      
+      // Log problematic records for debugging
+      if (!record.user_name || !record.creation_date_text) {
+        console.warn(`⚠️ Row ${index + 1} filtered out - missing data:`, {
+          user_name: record.user_name,
+          creation_date_text: record.creation_date_text,
+          originalRow: row
+        });
+      }
+      
+      return record;
+    });
     
-    console.log('📊 Transformed records:', appointmentRecords.length, 'valid appointments');
-    console.log('📋 Sample record:', appointmentRecords[0]);
+    // Filter valid records and log the filtering process
+    const validRecords = appointmentRecords.filter(record => record.user_name && record.creation_date_text);
+    
+    console.log('📊 Data transformation summary:', {
+      originalRecords: sanitizedData.length,
+      transformedRecords: appointmentRecords.length,
+      validRecords: validRecords.length,
+      filteredOut: appointmentRecords.length - validRecords.length
+    });
+    
+    console.log('📋 Sample valid record:', validRecords[0]);
+    
+    if (validRecords.length === 0) {
+      throw new Error('No valid records found after filtering. Check your Excel column names.');
+    }
     
     // Insert appointments in batches (Supabase handles up to 1000 records per batch)
     const batchSize = 1000;
     let insertedCount = 0;
     
-    for (let i = 0; i < appointmentRecords.length; i += batchSize) {
-      const batch = appointmentRecords.slice(i, i + batchSize);
+    console.log(`📁 Starting batch insertion for ${validRecords.length} records in batches of ${batchSize}`);
+    
+    for (let i = 0; i < validRecords.length; i += batchSize) {
+      const batch = validRecords.slice(i, i + batchSize);
+      const batchNumber = Math.floor(i/batchSize) + 1;
+      const totalBatches = Math.ceil(validRecords.length / batchSize);
+      
+      console.log(`📦 Processing batch ${batchNumber}/${totalBatches}: ${batch.length} records (${i + 1}-${i + batch.length})`);
       
       const { error: insertError, data: insertResult } = await supabase
         .from('appointments')
@@ -307,12 +345,12 @@ const saveAppointmentData = async (data, userEmail, fileName, setSaveStatus = nu
         .select('id');
       
       if (insertError) {
-        console.error('❌ Batch insert error:', insertError);
+        console.error(`❌ Batch ${batchNumber} insert error:`, insertError);
         throw insertError;
       }
       
       insertedCount += insertResult.length;
-      console.log(`📁 Inserted batch ${Math.floor(i/batchSize) + 1}: ${insertResult.length} records`);
+      console.log(`✅ Batch ${batchNumber} completed: ${insertResult.length} records inserted`);
     }
     
     console.log('📁 Successfully saved all appointment data!', insertedCount, 'records');
