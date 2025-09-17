@@ -123,23 +123,28 @@ const LoginForm = ({ onLogin }) => {
   );
 };
 
-// Data persistence functions
-const saveUserData = async (userId, data, setSaveStatus = null) => {
+// Shared data persistence functions (everyone sees the same data)
+const saveSharedData = async (data, userEmail, setSaveStatus = null) => {
   try {
     if (setSaveStatus) setSaveStatus('💾 Saving...');
     
-    console.log('🔍 Attempting to save data:', {
-      userId: userId,
+    console.log('🔍 Attempting to save shared data:', {
       dataLength: data?.length || 0,
       dataType: typeof data,
+      uploadedBy: userEmail,
       timestamp: new Date().toISOString()
     });
     
+    // First, clear any existing shared data (we only want one dataset)
+    await supabase.from('shared_appointments').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    
+    // Insert the new shared data
     const { error, data: result } = await supabase
-      .from('user_appointments')
-      .upsert({
-        user_id: userId,
+      .from('shared_appointments')
+      .insert({
         data: data,
+        uploaded_by: (await supabase.auth.getUser()).data.user?.id,
+        uploaded_by_email: userEmail,
         updated_at: new Date().toISOString()
       })
       .select();
@@ -154,10 +159,10 @@ const saveUserData = async (userId, data, setSaveStatus = null) => {
       throw error;
     }
     
-    console.log('📁 Data saved to cloud successfully!', result);
+    console.log('📁 Shared data saved successfully!', result);
     
     if (setSaveStatus) {
-      setSaveStatus('✅ Saved');
+      setSaveStatus('✅ Saved for everyone');
       setTimeout(() => setSaveStatus(''), 2000);
     }
     
@@ -167,7 +172,6 @@ const saveUserData = async (userId, data, setSaveStatus = null) => {
       message: error.message,
       stack: error.stack,
       name: error.name,
-      userId: userId,
       dataLength: data?.length || 0
     });
     
@@ -180,14 +184,15 @@ const saveUserData = async (userId, data, setSaveStatus = null) => {
   }
 };
 
-const loadUserData = async (userId) => {
+const loadSharedData = async () => {
   try {
-    console.log('🔍 Loading data for user:', userId);
+    console.log('🔍 Loading shared data for all users...');
     
     const { data, error } = await supabase
-      .from('user_appointments')
-      .select('data')
-      .eq('user_id', userId)
+      .from('shared_appointments')
+      .select('data, uploaded_by_email, created_at')
+      .order('created_at', { ascending: false })
+      .limit(1)
       .single();
     
     if (error && error.code !== 'PGRST116') {
@@ -196,11 +201,45 @@ const loadUserData = async (userId) => {
     }
     
     const result = data?.data || [];
-    console.log('📊 Loaded data:', result.length, 'records');
-    return result;
+    const uploadedBy = data?.uploaded_by_email || 'Unknown';
+    const uploadedAt = data?.created_at ? new Date(data.created_at).toLocaleDateString() : 'Unknown';
+    
+    console.log('📊 Loaded shared data:', result.length, 'records, uploaded by:', uploadedBy);
+    return { data: result, uploadedBy, uploadedAt };
   } catch (error) {
-    console.error('❌ Error loading data:', error);
-    return [];
+    console.error('❌ Error loading shared data:', error);
+    return { data: [], uploadedBy: null, uploadedAt: null };
+  }
+};
+
+const clearSharedData = async (setSaveStatus = null) => {
+  try {
+    if (setSaveStatus) setSaveStatus('🗑️ Clearing...');
+    
+    const { error } = await supabase
+      .from('shared_appointments')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all records
+    
+    if (error) throw error;
+    
+    console.log('🗑️ Shared data cleared successfully');
+    
+    if (setSaveStatus) {
+      setSaveStatus('✅ Data cleared for everyone');
+      setTimeout(() => setSaveStatus(''), 2000);
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('❌ Error clearing shared data:', error);
+    
+    if (setSaveStatus) {
+      setSaveStatus(`❌ Clear failed: ${error.message}`);
+      setTimeout(() => setSaveStatus(''), 3000);
+    }
+    
+    return false;
   }
 };
 
@@ -368,6 +407,10 @@ const App = () => {
   
   // Save status for user feedback
   const [saveStatus, setSaveStatus] = useState('');
+  
+  // Shared data tracking
+  const [dataUploadedBy, setDataUploadedBy] = useState('');
+  const [dataUploadedAt, setDataUploadedAt] = useState('');
   
   // File input ref
   const fileInputRef = useRef(null);
@@ -656,10 +699,16 @@ const App = () => {
     setUploadedFileName('Sample Data');
     setLoading(false);
     
-    // Immediately save sample data if user is logged in
+    // Immediately save sample data as shared data
     if (user) {
-      console.log('📁 Saving sample data to cloud...');
-      saveUserData(user.id, sampleData, setSaveStatus);
+      console.log('📁 Saving sample data as shared data...');
+      saveSharedData(sampleData, user.email, setSaveStatus).then(success => {
+        if (success) {
+          setDataUploadedBy(user.email);
+          setDataUploadedAt(new Date().toLocaleDateString());
+          setUploadedFileName(`Sample Data (uploaded by ${user.email})`);
+        }
+      });
     }
   };
 
@@ -760,10 +809,16 @@ const App = () => {
         setIncludedUsers(new Set(uniqueUsersList)); // Include all users by default
         setLoading(false);
         
-        // Immediately save data if user is logged in
+        // Immediately save uploaded data as shared data
         if (user && validData.length > 0) {
-          console.log('📁 Immediately saving uploaded data to cloud...');
-          saveUserData(user.id, validData, setSaveStatus);
+          console.log('📁 Immediately saving uploaded data as shared data...');
+          saveSharedData(validData, user.email, setSaveStatus).then(success => {
+            if (success) {
+              setDataUploadedBy(user.email);
+              setDataUploadedAt(new Date().toLocaleDateString());
+              setUploadedFileName(`${file.name} (uploaded by ${user.email})`);
+            }
+          });
         }
         
         if (validData.length === 0) {
@@ -799,32 +854,37 @@ const App = () => {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Load user's data when they log in
+  // Load shared data when any user logs in
   useEffect(() => {
     if (user) {
-      console.log('👤 User logged in, loading saved data...');
-      loadUserData(user.id).then(savedData => {
-        if (savedData.length > 0) {
-          console.log('📊 Found saved data:', savedData.length, 'appointments');
-          setRawData(savedData);
-          setUniqueSources([...new Set(savedData.map(row => row['Source Type']).filter(Boolean))]);
-          setUniqueUsers([...new Set(savedData.map(row => row['Χρήστης δημιουργίας']).filter(Boolean))]);
-          setIncludedUsers(new Set(savedData.map(row => row['Χρήστης δημιουργίας']).filter(Boolean)));
+      console.log('👤 User logged in, loading shared data...');
+      loadSharedData().then(result => {
+        if (result.data.length > 0) {
+          console.log('📊 Found shared data:', result.data.length, 'appointments');
+          setRawData(result.data);
+          setUniqueSources([...new Set(result.data.map(row => row['Source Type']).filter(Boolean))]);
+          setUniqueUsers([...new Set(result.data.map(row => row['Χρήστης δημιουργίας']).filter(Boolean))]);
+          setIncludedUsers(new Set(result.data.map(row => row['Χρήστης δημιουργίας']).filter(Boolean)));
+          setDataUploadedBy(result.uploadedBy);
+          setDataUploadedAt(result.uploadedAt);
+          setUploadedFileName(`Shared Data (uploaded by ${result.uploadedBy})`);
           setLoading(false);
         } else {
-          console.log('📭 No saved data found, generate sample data when needed');
+          console.log('📭 No shared data found');
+          setDataUploadedBy('');
+          setDataUploadedAt('');
           setLoading(false);
         }
       });
     }
   }, [user]);
 
-  // Auto-save data when it changes
+  // Auto-save shared data when it changes
   useEffect(() => {
     if (user && rawData.length > 0) {
       const saveTimer = setTimeout(() => {
-        console.log('💾 Auto-saving data...');
-        saveUserData(user.id, rawData, setSaveStatus);
+        console.log('💾 Auto-saving shared data...');
+        saveSharedData(rawData, user.email, setSaveStatus);
       }, 3000); // Save 3 seconds after data changes
 
       return () => clearTimeout(saveTimer);
@@ -843,11 +903,13 @@ const App = () => {
     });
   };
 
-  // Manual save function
+  // Manual save function for shared data
   const handleManualSave = async () => {
     if (user && rawData.length > 0) {
-      const success = await saveUserData(user.id, rawData, setSaveStatus);
+      const success = await saveSharedData(rawData, user.email, setSaveStatus);
       if (success) {
+        setDataUploadedBy(user.email);
+        setDataUploadedAt(new Date().toLocaleDateString());
         console.log('✅ Manual save successful');
       }
     } else if (!user) {
@@ -857,10 +919,10 @@ const App = () => {
     }
   };
 
-  // Clear/Delete data function
+  // Clear/Delete shared data function
   const handleClearData = async () => {
     const confirmed = window.confirm(
-      '⚠️ Are you sure you want to clear all data?\n\nThis will:\n• Clear all charts and data from view\n• Delete your saved data from the cloud\n• This action cannot be undone\n\nClick OK to proceed or Cancel to keep your data.'
+      '⚠️ Are you sure you want to clear all shared data?\n\nThis will:\n• Clear all charts and data for EVERYONE\n• Delete the shared data from the cloud\n• All users will see empty data\n• This action cannot be undone\n\nClick OK to proceed or Cancel to keep the data.'
     );
     
     if (confirmed) {
@@ -881,27 +943,20 @@ const App = () => {
         setSelectedUser(null);
         setStartDate(null);
         setEndDate(null);
+        setDataUploadedBy('');
+        setDataUploadedAt('');
         
-        // Delete from cloud if user is logged in
+        // Delete shared data from cloud
         if (user) {
-          setSaveStatus('🗑️ Deleting...');
-          const { error } = await supabase
-            .from('user_appointments')
-            .delete()
-            .eq('user_id', user.id);
-          
-          if (error) throw error;
-          
-          setSaveStatus('✅ Data cleared');
-          setTimeout(() => setSaveStatus(''), 2000);
-          console.log('🗑️ Data cleared from cloud successfully');
+          const success = await clearSharedData(setSaveStatus);
+          if (success) {
+            console.log('🗑️ Shared data cleared successfully for everyone');
+          }
         }
         
       } catch (error) {
-        console.error('❌ Error clearing data:', error);
-        setSaveStatus('❌ Clear failed');
-        setTimeout(() => setSaveStatus(''), 3000);
-        alert('Error clearing data from cloud. Local data has been cleared.');
+        console.error('❌ Error clearing shared data:', error);
+        alert('Error clearing shared data from cloud. Local data has been cleared.');
       }
     }
   };
@@ -1144,7 +1199,7 @@ const App = () => {
         <header className="mb-8 text-center">
           <div className="flex justify-between items-center mb-4">
             <div className="flex items-center space-x-4">
-              <h1 className="text-4xl font-bold text-gray-800">Automated Appointment Dashboard</h1>
+              <h1 className="text-4xl font-bold text-gray-800">Shared Appointment Dashboard</h1>
             </div>
             <div className="flex items-center space-x-4">
               <div className="text-right">
@@ -1160,9 +1215,9 @@ const App = () => {
               </button>
             </div>
           </div>
-          <p className="text-gray-500">Your personal appointment data is automatically saved to the cloud</p>
+          <p className="text-gray-500">🌐 Shared appointment data - all users see the same information</p>
           {uploadedFileName && (
-            <p className="text-sm text-blue-600 mt-2">📁 Loaded: {uploadedFileName}</p>
+            <p className="text-sm text-blue-600 mt-2">📁 Current data: {uploadedFileName}</p>
           )}
         </header>
 
@@ -1233,10 +1288,26 @@ const App = () => {
             
             {/* Data Info */}
             {rawData.length > 0 && (
-              <div className="text-center text-sm text-gray-600 mb-2">
-                <span className="bg-blue-100 px-3 py-1 rounded-full">
-                  📊 {rawData.length} appointments loaded
-                </span>
+              <div className="text-center text-sm text-gray-600 mb-2 space-y-2">
+                <div className="bg-blue-100 px-3 py-1 rounded-full">
+                  📊 {rawData.length} appointments loaded (shared data)
+                </div>
+                {dataUploadedBy && (
+                  <div className="bg-green-100 px-3 py-1 rounded-full">
+                    👤 Uploaded by: {dataUploadedBy} {dataUploadedAt && `on ${dataUploadedAt}`}
+                  </div>
+                )}
+                <div className="bg-yellow-100 px-3 py-1 rounded-full">
+                  🌐 All users see the same data
+                </div>
+              </div>
+            )}
+            
+            {rawData.length === 0 && user && (
+              <div className="text-center text-sm text-gray-500 mb-2">
+                <div className="bg-gray-100 px-3 py-1 rounded-full">
+                  📭 No shared data available - upload data to share with everyone
+                </div>
               </div>
             )}
             
