@@ -123,14 +123,41 @@ const LoginForm = ({ onLogin }) => {
   );
 };
 
+// Data sanitization function to prevent Unicode escape sequence errors
+const sanitizeData = (data) => {
+  if (!data || !Array.isArray(data)) return data;
+  
+  return data.map(row => {
+    const sanitizedRow = {};
+    for (const [key, value] of Object.entries(row)) {
+      if (typeof value === 'string') {
+        // Remove problematic Unicode characters and escape sequences
+        sanitizedRow[key] = value
+          .replace(/[\u2028\u2029]/g, '') // Remove line/paragraph separators
+          .replace(/\\/g, '\\\\') // Escape backslashes
+          .replace(/[\u0000-\u001F\u007F-\u009F]/g, '') // Remove control characters
+          .replace(/[\uFFF0-\uFFFF]/g, '') // Remove specials
+          .trim(); // Remove leading/trailing whitespace
+      } else {
+        sanitizedRow[key] = value;
+      }
+    }
+    return sanitizedRow;
+  });
+};
+
 // Shared data persistence functions (everyone sees the same data)
 const saveSharedData = async (data, userEmail, setSaveStatus = null) => {
   try {
     if (setSaveStatus) setSaveStatus('💾 Saving...');
     
+    // Sanitize data to prevent Unicode escape sequence errors
+    const sanitizedData = sanitizeData(data);
+    
     console.log('🔍 Attempting to save shared data:', {
-      dataLength: data?.length || 0,
-      dataType: typeof data,
+      originalLength: data?.length || 0,
+      sanitizedLength: sanitizedData?.length || 0,
+      dataType: typeof sanitizedData,
       uploadedBy: userEmail,
       timestamp: new Date().toISOString()
     });
@@ -138,11 +165,11 @@ const saveSharedData = async (data, userEmail, setSaveStatus = null) => {
     // First, clear any existing shared data (we only want one dataset)
     await supabase.from('shared_appointments').delete().neq('id', '00000000-0000-0000-0000-000000000000');
     
-    // Insert the new shared data
+    // Insert the new shared data (using sanitized data)
     const { error, data: result } = await supabase
       .from('shared_appointments')
       .insert({
-        data: data,
+        data: sanitizedData,
         uploaded_by: (await supabase.auth.getUser()).data.user?.id,
         uploaded_by_email: userEmail,
         updated_at: new Date().toISOString()
@@ -176,7 +203,11 @@ const saveSharedData = async (data, userEmail, setSaveStatus = null) => {
     });
     
     if (setSaveStatus) {
-      setSaveStatus(`❌ Save failed: ${error.message}`);
+      if (error.message && error.message.includes('Unicode')) {
+        setSaveStatus(`❌ Data contains special characters that cannot be saved`);
+      } else {
+        setSaveStatus(`❌ Save failed: ${error.message}`);
+      }
       setTimeout(() => setSaveStatus(''), 5000);
     }
     
@@ -702,13 +733,21 @@ const App = () => {
     // Immediately save sample data as shared data
     if (user) {
       console.log('📁 Saving sample data as shared data...');
-      saveSharedData(sampleData, user.email, setSaveStatus).then(success => {
+      try {
+        const success = await saveSharedData(sampleData, user.email, setSaveStatus);
         if (success) {
           setDataUploadedBy(user.email);
           setDataUploadedAt(new Date().toLocaleDateString());
           setUploadedFileName(`Sample Data (uploaded by ${user.email})`);
+          console.log('✅ Sample data saved successfully');
+        } else {
+          console.log('⚠️ Sample data generated but save failed');
+          alert('Sample data generated but could not save to cloud. You can try manual save.');
         }
-      });
+      } catch (error) {
+        console.error('❌ Sample data save failed:', error);
+        alert('Sample data generated but save failed. Please use manual save.');
+      }
     }
   };
 
@@ -812,13 +851,21 @@ const App = () => {
         // Immediately save uploaded data as shared data
         if (user && validData.length > 0) {
           console.log('📁 Immediately saving uploaded data as shared data...');
-          saveSharedData(validData, user.email, setSaveStatus).then(success => {
+          try {
+            const success = await saveSharedData(validData, user.email, setSaveStatus);
             if (success) {
               setDataUploadedBy(user.email);
               setDataUploadedAt(new Date().toLocaleDateString());
               setUploadedFileName(`${file.name} (uploaded by ${user.email})`);
+              console.log('✅ File upload and save successful');
+            } else {
+              console.log('⚠️ File uploaded but save failed');
+              alert('File uploaded successfully but could not save to cloud. You can try manual save.');
             }
-          });
+          } catch (error) {
+            console.error('❌ Auto-save after upload failed:', error);
+            alert('File uploaded successfully but auto-save failed. Please use manual save.');
+          }
         }
         
         if (validData.length === 0) {
@@ -905,17 +952,36 @@ const App = () => {
 
   // Manual save function for shared data
   const handleManualSave = async () => {
-    if (user && rawData.length > 0) {
+    if (!user) {
+      alert('Please log in to save data.');
+      return;
+    }
+    
+    if (!rawData || rawData.length === 0) {
+      alert('Please upload some data first.');
+      return;
+    }
+    
+    try {
+      // Show data info before saving
+      console.log('📊 Preparing to save data:', {
+        totalRecords: rawData.length,
+        columns: Object.keys(rawData[0] || {}),
+        sampleRecord: rawData[0]
+      });
+      
       const success = await saveSharedData(rawData, user.email, setSaveStatus);
       if (success) {
         setDataUploadedBy(user.email);
         setDataUploadedAt(new Date().toLocaleDateString());
         console.log('✅ Manual save successful');
+        alert('✅ Data saved successfully for everyone!');
+      } else {
+        alert('❌ Failed to save data. Please check the console for details.');
       }
-    } else if (!user) {
-      alert('Please log in to save data.');
-    } else {
-      alert('Please upload some data first.');
+    } catch (error) {
+      console.error('❌ Manual save error:', error);
+      alert(`❌ Save failed: ${error.message}`);
     }
   };
 
