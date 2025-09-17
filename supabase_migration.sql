@@ -49,6 +49,21 @@ ALTER TABLE appointment_datasets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE appointment_backups ENABLE ROW LEVEL SECURITY;
 
+-- Drop existing policies if they exist and recreate them
+DROP POLICY IF EXISTS "Allow authenticated users to read datasets" ON appointment_datasets;
+DROP POLICY IF EXISTS "Allow authenticated users to insert datasets" ON appointment_datasets;
+DROP POLICY IF EXISTS "Allow authenticated users to update datasets" ON appointment_datasets;
+DROP POLICY IF EXISTS "Allow authenticated users to delete datasets" ON appointment_datasets;
+
+DROP POLICY IF EXISTS "Allow authenticated users to read appointments" ON appointments;
+DROP POLICY IF EXISTS "Allow authenticated users to insert appointments" ON appointments;
+DROP POLICY IF EXISTS "Allow authenticated users to update appointments" ON appointments;
+DROP POLICY IF EXISTS "Allow authenticated users to delete appointments" ON appointments;
+
+DROP POLICY IF EXISTS "Allow authenticated users to read backups" ON appointment_backups;
+DROP POLICY IF EXISTS "Allow authenticated users to create backups" ON appointment_backups;
+DROP POLICY IF EXISTS "Allow authenticated users to delete backups" ON appointment_backups;
+
 -- RLS Policies - Allow all authenticated users to read/write shared data
 CREATE POLICY "Allow authenticated users to read datasets" ON appointment_datasets
   FOR SELECT TO authenticated USING (true);

@@ -175,19 +175,46 @@ const LoginForm = ({ onLogin }) => {
 const sanitizeData = (data) => {
   if (!data || !Array.isArray(data)) return data;
   
+  const sanitizeString = (str) => {
+    if (typeof str !== 'string') return str;
+    
+    try {
+      return str
+        // Remove line and paragraph separators
+        .replace(/[\u2028\u2029]/g, ' ')
+        // Replace problematic backslashes but preserve intentional ones
+        .replace(/\\(?![\\"])/g, '\\\\')
+        // Remove control characters (except tabs, newlines, carriage returns)
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
+        // Remove special Unicode characters that cause issues
+        .replace(/[\uFFF0-\uFFFF]/g, '')
+        // Remove null bytes
+        .replace(/\0/g, '')
+        // Normalize whitespace
+        .replace(/\s+/g, ' ')
+        .trim();
+    } catch (error) {
+      console.warn('String sanitization failed for:', str, error);
+      // Return a safe fallback
+      return String(str).replace(/[^\x20-\x7E\u00A0-\u00FF\u0100-\u017F\u0180-\u024F]/g, '').trim();
+    }
+  };
+  
   return data.map(row => {
     const sanitizedRow = {};
     for (const [key, value] of Object.entries(row)) {
-      if (typeof value === 'string') {
-        // Remove problematic Unicode characters and escape sequences
-        sanitizedRow[key] = value
-          .replace(/[\u2028\u2029]/g, '') // Remove line/paragraph separators
-          .replace(/\\/g, '\\\\') // Escape backslashes
-          .replace(/[\u0000-\u001F\u007F-\u009F]/g, '') // Remove control characters
-          .replace(/[\uFFF0-\uFFFF]/g, '') // Remove specials
-          .trim(); // Remove leading/trailing whitespace
-      } else {
-        sanitizedRow[key] = value;
+      try {
+        if (typeof value === 'string') {
+          sanitizedRow[key] = sanitizeString(value);
+        } else if (value !== null && value !== undefined) {
+          // For non-string values, convert to string and sanitize if needed
+          sanitizedRow[key] = typeof value === 'object' ? JSON.stringify(value) : value;
+        } else {
+          sanitizedRow[key] = value;
+        }
+      } catch (error) {
+        console.warn('Row sanitization failed for key:', key, value, error);
+        sanitizedRow[key] = ''; // Safe fallback
       }
     }
     return sanitizedRow;
@@ -415,11 +442,31 @@ const createDataBackup = async (data, userEmail, backupName, isAutoBackup = fals
   try {
     if (setSaveStatus) setSaveStatus('💾 Creating backup...');
     
+    // Sanitize data before storing in backup to prevent Unicode errors
+    const sanitizedData = sanitizeData(data);
+    
+    console.log('💾 Creating backup with sanitized data:', {
+      originalLength: data?.length || 0,
+      sanitizedLength: sanitizedData?.length || 0,
+      backupName,
+      isAutoBackup
+    });
+    
+    // Additional safety: Convert to JSON and back to ensure no hidden Unicode issues
+    let safeData;
+    try {
+      const jsonString = JSON.stringify(sanitizedData);
+      safeData = JSON.parse(jsonString);
+    } catch (jsonError) {
+      console.warn('JSON conversion failed, using original sanitized data:', jsonError);
+      safeData = sanitizedData;
+    }
+    
     const { data: result, error } = await supabase
       .from('appointment_backups')
       .insert({
         backup_name: backupName || `Backup ${new Date().toLocaleString()}`,
-        backup_data: data,
+        backup_data: safeData,
         backed_up_by: (await supabase.auth.getUser()).data.user?.id,
         backed_up_by_email: userEmail,
         auto_backup: isAutoBackup
