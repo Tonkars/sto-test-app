@@ -670,7 +670,7 @@ const App = () => {
   };
 
   // Generate sample data for demonstration
-  const generateSampleData = () => {
+  const generateSampleData = async () => {
     const sampleData = [
       {
         'Χρήστης δημιουργίας': 'k_tsipasis',
@@ -752,7 +752,7 @@ const App = () => {
   };
 
   // Handle file upload (Excel or CSV)
-  const handleFileUpload = (event) => {
+  const handleFileUpload = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
 
@@ -768,7 +768,7 @@ const App = () => {
       setLoading(false);
     };
     
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         console.log('File loaded, processing...');
         const data = e.target.result;
