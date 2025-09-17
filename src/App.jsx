@@ -122,8 +122,10 @@ const LoginForm = ({ onLogin }) => {
 };
 
 // Data persistence functions
-const saveUserData = async (userId, data) => {
+const saveUserData = async (userId, data, setSaveStatus = null) => {
   try {
+    if (setSaveStatus) setSaveStatus('💾 Saving...');
+    
     const { error } = await supabase
       .from('user_appointments')
       .upsert({
@@ -134,8 +136,22 @@ const saveUserData = async (userId, data) => {
     
     if (error) throw error;
     console.log('📁 Data saved to cloud successfully!');
+    
+    if (setSaveStatus) {
+      setSaveStatus('✅ Saved');
+      setTimeout(() => setSaveStatus(''), 2000);
+    }
+    
+    return true;
   } catch (error) {
     console.error('❌ Error saving data:', error);
+    
+    if (setSaveStatus) {
+      setSaveStatus('❌ Save failed');
+      setTimeout(() => setSaveStatus(''), 3000);
+    }
+    
+    return false;
   }
 };
 
@@ -297,6 +313,9 @@ const App = () => {
   // New state for user inclusion control
   const [includedUsers, setIncludedUsers] = useState(new Set());
   const [showUserManagement, setShowUserManagement] = useState(false);
+  
+  // Save status for user feedback
+  const [saveStatus, setSaveStatus] = useState('');
   
   // File input ref
   const fileInputRef = useRef(null);
@@ -584,6 +603,12 @@ const App = () => {
     setIncludedUsers(new Set(users)); // Include all users by default
     setUploadedFileName('Sample Data');
     setLoading(false);
+    
+    // Immediately save sample data if user is logged in
+    if (user) {
+      console.log('📁 Saving sample data to cloud...');
+      saveUserData(user.id, sampleData, setSaveStatus);
+    }
   };
 
   // Handle file upload (Excel or CSV)
@@ -683,6 +708,12 @@ const App = () => {
         setIncludedUsers(new Set(uniqueUsersList)); // Include all users by default
         setLoading(false);
         
+        // Immediately save data if user is logged in
+        if (user && validData.length > 0) {
+          console.log('📁 Immediately saving uploaded data to cloud...');
+          saveUserData(user.id, validData, setSaveStatus);
+        }
+        
         if (validData.length === 0) {
           alert('No valid data found. Please check that your Excel file has the required columns: Χρήστης δημιουργίας, Υποκατάστημα, Ημερομηνία δημιουργίας, Source Type');
         }
@@ -741,7 +772,7 @@ const App = () => {
     if (user && rawData.length > 0) {
       const saveTimer = setTimeout(() => {
         console.log('💾 Auto-saving data...');
-        saveUserData(user.id, rawData);
+        saveUserData(user.id, rawData, setSaveStatus);
       }, 3000); // Save 3 seconds after data changes
 
       return () => clearTimeout(saveTimer);
@@ -758,6 +789,20 @@ const App = () => {
       appointmentsOverTime: [],
       appointmentsByStore: [],
     });
+  };
+
+  // Manual save function
+  const handleManualSave = async () => {
+    if (user && rawData.length > 0) {
+      const success = await saveUserData(user.id, rawData, setSaveStatus);
+      if (success) {
+        console.log('✅ Manual save successful');
+      }
+    } else if (!user) {
+      alert('Please log in to save data.');
+    } else {
+      alert('Please upload some data first.');
+    }
   };
 
   // Fetch the CSV data on component mount (only if user is not logged in)
@@ -1024,7 +1069,7 @@ const App = () => {
         <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
           <div className="flex flex-col items-center">
             <h3 className="text-lg font-semibold text-gray-800 mb-4">Import Data</h3>
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-4 mb-4">
               <input
                 type="file"
                 ref={fileInputRef}
@@ -1045,7 +1090,22 @@ const App = () => {
               >
                 <span>Use Sample Data</span>
               </button>
+              <button
+                onClick={handleManualSave}
+                className="flex items-center space-x-2 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors duration-300"
+                disabled={!user || rawData.length === 0}
+              >
+                <span>💾 Save Data</span>
+              </button>
             </div>
+            
+            {/* Save Status Indicator */}
+            {saveStatus && (
+              <div className="flex items-center space-x-2 bg-gray-100 px-4 py-2 rounded-lg mb-4">
+                <span className="text-sm font-medium">{saveStatus}</span>
+              </div>
+            )}
+            
             <p className="text-sm text-gray-500 mt-2">
               Supports .xlsx, .xls, and .csv files with columns: Χρήστης δημιουργίας, Υποκατάστημα, Ημερομηνία δημιουργίας, Source Type
             </p>
