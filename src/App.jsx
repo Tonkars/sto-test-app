@@ -22,12 +22,138 @@ import {
   Upload as UploadIcon,
   Calendar as CalendarIcon,
   Filter as FilterIcon,
-  Users as UsersIcon
+  Users as UsersIcon,
+  LogOut as LogOutIcon,
+  User as UserIcon
 } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
+import { createClient } from '@supabase/supabase-js';
+
+// Supabase configuration
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Login Component
+const LoginForm = ({ onLogin }) => {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    
+    try {
+      if (isSignUp) {
+        const { error } = await supabase.auth.signUp({ email, password });
+        if (error) throw error;
+        alert('Check your email for verification link!');
+      } else {
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        onLogin(data.user);
+      }
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
+      <div className="max-w-md w-full space-y-8 p-8 bg-white rounded-xl shadow-lg">
+        <div className="text-center">
+          <UserIcon className="mx-auto h-12 w-12 text-blue-600" />
+          <h2 className="mt-6 text-3xl font-bold text-gray-900">
+            {isSignUp ? 'Create Account' : 'Sign In'}
+          </h2>
+          <p className="mt-2 text-gray-600">
+            {isSignUp ? 'Join to save your appointment data' : 'Access your appointment dashboard'}
+          </p>
+        </div>
+        <form onSubmit={handleAuth} className="space-y-6">
+          <div>
+            <input
+              type="email"
+              placeholder="Email address"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              required
+            />
+          </div>
+          <div>
+            <input
+              type="password"
+              placeholder="Password (min 6 characters)"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              required
+              minLength={6}
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200"
+          >
+            {loading ? 'Loading...' : (isSignUp ? 'Create Account' : 'Sign In')}
+          </button>
+        </form>
+        <p className="text-center text-sm text-gray-600">
+          {isSignUp ? 'Already have an account?' : "Don't have an account?"}
+          <button
+            onClick={() => setIsSignUp(!isSignUp)}
+            className="text-blue-600 hover:text-blue-800 ml-1 font-medium"
+          >
+            {isSignUp ? 'Sign In' : 'Sign Up'}
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+};
+
+// Data persistence functions
+const saveUserData = async (userId, data) => {
+  try {
+    const { error } = await supabase
+      .from('user_appointments')
+      .upsert({
+        user_id: userId,
+        data: data,
+        updated_at: new Date().toISOString()
+      });
+    
+    if (error) throw error;
+    console.log('📁 Data saved to cloud successfully!');
+  } catch (error) {
+    console.error('❌ Error saving data:', error);
+  }
+};
+
+const loadUserData = async (userId) => {
+  try {
+    const { data, error } = await supabase
+      .from('user_appointments')
+      .select('data')
+      .eq('user_id', userId)
+      .single();
+    
+    if (error && error.code !== 'PGRST116') throw error;
+    return data?.data || [];
+  } catch (error) {
+    console.error('❌ Error loading data:', error);
+    return [];
+  }
+};
 
 // Custom component for a chart card with a title and a container for the chart
 const ChartCard = ({ title, children }) => (
@@ -143,6 +269,10 @@ const formatDateForChart = (date) => {
 };
 
 const App = () => {
+  // Authentication state
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  
   // State variables for the application
   const [rawData, setRawData] = useState([]);
   const [processedData, setProcessedData] = useState({
@@ -449,7 +579,9 @@ const App = () => {
 
     setRawData(sampleData);
     setUniqueSources([...new Set(sampleData.map(row => row['Source Type']).filter(Boolean))]);
-    setUniqueUsers([...new Set(sampleData.map(row => row['Χρήστης δημιουργίας']).filter(Boolean))]);
+    const users = [...new Set(sampleData.map(row => row['Χρήστης δημιουργίας']).filter(Boolean))];
+    setUniqueUsers(users);
+    setIncludedUsers(new Set(users)); // Include all users by default
     setUploadedFileName('Sample Data');
     setLoading(false);
   };
@@ -546,7 +678,9 @@ const App = () => {
         
         setRawData(validData);
         setUniqueSources([...new Set(sources)]);
-        setUniqueUsers([...new Set(users)]);
+        const uniqueUsersList = [...new Set(users)];
+        setUniqueUsers(uniqueUsersList);
+        setIncludedUsers(new Set(uniqueUsersList)); // Include all users by default
         setLoading(false);
         
         if (validData.length === 0) {
@@ -566,8 +700,71 @@ const App = () => {
     }
   };
 
-  // Fetch the CSV data on component mount
+  // Authentication effects
   useEffect(() => {
+    // Check if user is logged in
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Load user's data when they log in
+  useEffect(() => {
+    if (user) {
+      console.log('👤 User logged in, loading saved data...');
+      loadUserData(user.id).then(savedData => {
+        if (savedData.length > 0) {
+          console.log('📊 Found saved data:', savedData.length, 'appointments');
+          setRawData(savedData);
+          setUniqueSources([...new Set(savedData.map(row => row['Source Type']).filter(Boolean))]);
+          setUniqueUsers([...new Set(savedData.map(row => row['Χρήστης δημιουργίας']).filter(Boolean))]);
+          setIncludedUsers(new Set(savedData.map(row => row['Χρήστης δημιουργίας']).filter(Boolean)));
+          setLoading(false);
+        } else {
+          console.log('📭 No saved data found, generate sample data when needed');
+          setLoading(false);
+        }
+      });
+    }
+  }, [user]);
+
+  // Auto-save data when it changes
+  useEffect(() => {
+    if (user && rawData.length > 0) {
+      const saveTimer = setTimeout(() => {
+        console.log('💾 Auto-saving data...');
+        saveUserData(user.id, rawData);
+      }, 3000); // Save 3 seconds after data changes
+
+      return () => clearTimeout(saveTimer);
+    }
+  }, [user, rawData]);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+    setRawData([]);
+    setProcessedData({
+      appointmentsByUser: [],
+      appointmentsBySource: [],
+      appointmentsOverTime: [],
+      appointmentsByStore: [],
+    });
+  };
+
+  // Fetch the CSV data on component mount (only if user is not logged in)
+  useEffect(() => {
+    // Skip if user is logged in (their data is loaded in the auth useEffect)
+    if (user) return;
+    
     const fetchData = async () => {
       try {
         // Try to fetch the CSV file, but fall back to sample data if not available
@@ -601,7 +798,7 @@ const App = () => {
       }
     };
     fetchData();
-  }, []);
+  }, [user]);
 
   // Process data whenever raw data or any filter changes
   useEffect(() => {
@@ -778,12 +975,46 @@ const App = () => {
         : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
     }`;
 
+  // Authentication loading state
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show login form if user is not authenticated
+  if (!user) {
+    return <LoginForm onLogin={setUser} />;
+  }
+
   return (
     <div className="bg-gray-50 min-h-screen p-8 font-sans antialiased text-gray-900">
       <div className="max-w-6xl mx-auto">
         <header className="mb-8 text-center">
-          <h1 className="text-4xl font-bold text-gray-800 mb-2">Automated Appointment Dashboard</h1>
-          <p className="text-gray-500">Visualize and analyze your appointment data with interactive charts.</p>
+          <div className="flex justify-between items-center mb-4">
+            <div className="flex items-center space-x-4">
+              <h1 className="text-4xl font-bold text-gray-800">Automated Appointment Dashboard</h1>
+            </div>
+            <div className="flex items-center space-x-4">
+              <div className="text-right">
+                <p className="text-sm text-gray-600">Welcome back,</p>
+                <p className="font-medium text-gray-800">{user.email}</p>
+              </div>
+              <button
+                onClick={handleLogout}
+                className="flex items-center space-x-2 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors duration-200"
+              >
+                <LogOutIcon size={16} />
+                <span>Logout</span>
+              </button>
+            </div>
+          </div>
+          <p className="text-gray-500">Your personal appointment data is automatically saved to the cloud</p>
           {uploadedFileName && (
             <p className="text-sm text-blue-600 mt-2">📁 Loaded: {uploadedFileName}</p>
           )}
