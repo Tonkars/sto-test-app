@@ -24,7 +24,9 @@ import {
   Filter as FilterIcon,
   Users as UsersIcon,
   LogOut as LogOutIcon,
-  User as UserIcon
+  User as UserIcon,
+  Trash2 as TrashIcon,
+  Save as SaveIcon
 } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
@@ -126,16 +128,33 @@ const saveUserData = async (userId, data, setSaveStatus = null) => {
   try {
     if (setSaveStatus) setSaveStatus('💾 Saving...');
     
-    const { error } = await supabase
+    console.log('🔍 Attempting to save data:', {
+      userId: userId,
+      dataLength: data?.length || 0,
+      dataType: typeof data,
+      timestamp: new Date().toISOString()
+    });
+    
+    const { error, data: result } = await supabase
       .from('user_appointments')
       .upsert({
         user_id: userId,
         data: data,
         updated_at: new Date().toISOString()
-      });
+      })
+      .select();
     
-    if (error) throw error;
-    console.log('📁 Data saved to cloud successfully!');
+    if (error) {
+      console.error('❌ Supabase error details:', {
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+        code: error.code
+      });
+      throw error;
+    }
+    
+    console.log('📁 Data saved to cloud successfully!', result);
     
     if (setSaveStatus) {
       setSaveStatus('✅ Saved');
@@ -144,11 +163,17 @@ const saveUserData = async (userId, data, setSaveStatus = null) => {
     
     return true;
   } catch (error) {
-    console.error('❌ Error saving data:', error);
+    console.error('❌ Complete error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name,
+      userId: userId,
+      dataLength: data?.length || 0
+    });
     
     if (setSaveStatus) {
-      setSaveStatus('❌ Save failed');
-      setTimeout(() => setSaveStatus(''), 3000);
+      setSaveStatus(`❌ Save failed: ${error.message}`);
+      setTimeout(() => setSaveStatus(''), 5000);
     }
     
     return false;
@@ -157,17 +182,44 @@ const saveUserData = async (userId, data, setSaveStatus = null) => {
 
 const loadUserData = async (userId) => {
   try {
+    console.log('🔍 Loading data for user:', userId);
+    
     const { data, error } = await supabase
       .from('user_appointments')
       .select('data')
       .eq('user_id', userId)
       .single();
     
-    if (error && error.code !== 'PGRST116') throw error;
-    return data?.data || [];
+    if (error && error.code !== 'PGRST116') {
+      console.error('❌ Load error:', error);
+      throw error;
+    }
+    
+    const result = data?.data || [];
+    console.log('📊 Loaded data:', result.length, 'records');
+    return result;
   } catch (error) {
     console.error('❌ Error loading data:', error);
     return [];
+  }
+};
+
+// Test Supabase connection
+const testSupabaseConnection = async () => {
+  try {
+    console.log('🔍 Testing Supabase connection...');
+    const { data, error } = await supabase.auth.getUser();
+    
+    if (error) {
+      console.error('❌ Auth test failed:', error);
+      return false;
+    }
+    
+    console.log('✅ Supabase connection working, user:', data.user?.email || 'Not logged in');
+    return true;
+  } catch (error) {
+    console.error('❌ Connection test failed:', error);
+    return false;
   }
 };
 
@@ -805,6 +857,55 @@ const App = () => {
     }
   };
 
+  // Clear/Delete data function
+  const handleClearData = async () => {
+    const confirmed = window.confirm(
+      '⚠️ Are you sure you want to clear all data?\n\nThis will:\n• Clear all charts and data from view\n• Delete your saved data from the cloud\n• This action cannot be undone\n\nClick OK to proceed or Cancel to keep your data.'
+    );
+    
+    if (confirmed) {
+      try {
+        // Clear local state
+        setRawData([]);
+        setProcessedData({
+          appointmentsByUser: [],
+          appointmentsBySource: [],
+          appointmentsOverTime: [],
+          appointmentsByStore: [],
+        });
+        setUniqueSources([]);
+        setUniqueUsers([]);
+        setIncludedUsers(new Set());
+        setUploadedFileName('');
+        setSelectedSource(null);
+        setSelectedUser(null);
+        setStartDate(null);
+        setEndDate(null);
+        
+        // Delete from cloud if user is logged in
+        if (user) {
+          setSaveStatus('🗑️ Deleting...');
+          const { error } = await supabase
+            .from('user_appointments')
+            .delete()
+            .eq('user_id', user.id);
+          
+          if (error) throw error;
+          
+          setSaveStatus('✅ Data cleared');
+          setTimeout(() => setSaveStatus(''), 2000);
+          console.log('🗑️ Data cleared from cloud successfully');
+        }
+        
+      } catch (error) {
+        console.error('❌ Error clearing data:', error);
+        setSaveStatus('❌ Clear failed');
+        setTimeout(() => setSaveStatus(''), 3000);
+        alert('Error clearing data from cloud. Local data has been cleared.');
+      }
+    }
+  };
+
   // Fetch the CSV data on component mount (only if user is not logged in)
   useEffect(() => {
     // Skip if user is logged in (their data is loaded in the auth useEffect)
@@ -1068,7 +1169,9 @@ const App = () => {
         {/* File Upload Section */}
         <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
           <div className="flex flex-col items-center">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">Import Data</h3>
+            <h3 className="text-lg font-semibold text-gray-800 mb-4">Data Management</h3>
+            
+            {/* Upload and Generate Data Buttons */}
             <div className="flex items-center space-x-4 mb-4">
               <input
                 type="file"
@@ -1079,34 +1182,65 @@ const App = () => {
               />
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="flex items-center space-x-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-300"
+                className="flex items-center space-x-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-300 shadow-md"
               >
                 <UploadIcon size={20} />
-                <span>Upload Excel/CSV File</span>
+                <span>Upload Excel/CSV</span>
               </button>
               <button
                 onClick={generateSampleData}
-                className="flex items-center space-x-2 px-6 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors duration-300"
+                className="flex items-center space-x-2 px-6 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors duration-300 shadow-md"
               >
-                <span>Use Sample Data</span>
+                <span>📊 Use Sample Data</span>
               </button>
+            </div>
+
+            {/* Save and Delete Buttons */}
+            <div className="flex items-center space-x-4 mb-4">
               <button
                 onClick={handleManualSave}
-                className="flex items-center space-x-2 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors duration-300"
+                className="flex items-center space-x-2 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors duration-300 shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={!user || rawData.length === 0}
+                title={!user ? "Please log in to save data" : rawData.length === 0 ? "No data to save" : "Save your data to the cloud"}
               >
-                <span>💾 Save Data</span>
+                <SaveIcon size={18} />
+                <span>Save Data</span>
+              </button>
+              <button
+                onClick={handleClearData}
+                className="flex items-center space-x-2 px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors duration-300 shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={rawData.length === 0}
+                title={rawData.length === 0 ? "No data to clear" : "Clear all data (this will delete your saved data)"}
+              >
+                <TrashIcon size={18} />
+                <span>Clear Data</span>
+              </button>
+              <button
+                onClick={testSupabaseConnection}
+                className="flex items-center space-x-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors duration-300 shadow-md text-sm"
+                title="Test database connection (check browser console for results)"
+              >
+                <span>🔍 Test DB</span>
               </button>
             </div>
             
             {/* Save Status Indicator */}
             {saveStatus && (
-              <div className="flex items-center space-x-2 bg-gray-100 px-4 py-2 rounded-lg mb-4">
-                <span className="text-sm font-medium">{saveStatus}</span>
+              <div className="flex items-center space-x-2 bg-gray-100 px-4 py-2 rounded-lg mb-4 border-l-4 border-blue-500">
+                <span className="text-sm font-medium text-gray-700">{saveStatus}</span>
               </div>
             )}
             
-            <p className="text-sm text-gray-500 mt-2">
+            {/* Data Info */}
+            {rawData.length > 0 && (
+              <div className="text-center text-sm text-gray-600 mb-2">
+                <span className="bg-blue-100 px-3 py-1 rounded-full">
+                  📊 {rawData.length} appointments loaded
+                </span>
+              </div>
+            )}
+            
+            <p className="text-sm text-gray-500 text-center">
               Supports .xlsx, .xls, and .csv files with columns: Χρήστης δημιουργίας, Υποκατάστημα, Ημερομηνία δημιουργίας, Source Type
             </p>
           </div>
