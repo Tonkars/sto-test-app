@@ -44,6 +44,7 @@ const LoginForm = ({ onLogin }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isSignUp, setIsSignUp] = useState(false);
+  const [isPasswordReset, setIsPasswordReset] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const handleAuth = async (e) => {
@@ -51,7 +52,15 @@ const LoginForm = ({ onLogin }) => {
     setLoading(true);
     
     try {
-      if (isSignUp) {
+      if (isPasswordReset) {
+        // Password reset
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: `${window.location.origin}/auth/reset-password`,
+        });
+        if (error) throw error;
+        alert('Password reset email sent! Check your inbox.');
+        setIsPasswordReset(false);
+      } else if (isSignUp) {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
         alert('Check your email for verification link!');
@@ -73,10 +82,15 @@ const LoginForm = ({ onLogin }) => {
         <div className="text-center">
           <UserIcon className="mx-auto h-12 w-12 text-blue-600" />
           <h2 className="mt-6 text-3xl font-bold text-gray-900">
-            {isSignUp ? 'Create Account' : 'Sign In'}
+            {isPasswordReset ? 'Reset Password' : isSignUp ? 'Create Account' : 'Sign In'}
           </h2>
           <p className="mt-2 text-gray-600">
-            {isSignUp ? 'Join to save your appointment data' : 'Access your appointment dashboard'}
+            {isPasswordReset 
+              ? 'Enter your email to receive reset instructions'
+              : isSignUp 
+                ? 'Join to save your appointment data' 
+                : 'Access your appointment dashboard'
+            }
           </p>
         </div>
         <form onSubmit={handleAuth} className="space-y-6">
@@ -97,8 +111,9 @@ const LoginForm = ({ onLogin }) => {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              required
+              required={!isPasswordReset}
               minLength={6}
+              style={{ display: isPasswordReset ? 'none' : 'block' }}
             />
           </div>
           <button
@@ -106,18 +121,51 @@ const LoginForm = ({ onLogin }) => {
             disabled={loading}
             className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200"
           >
-            {loading ? 'Loading...' : (isSignUp ? 'Create Account' : 'Sign In')}
+            {loading 
+              ? 'Loading...' 
+              : isPasswordReset 
+                ? 'Send Reset Email'
+                : isSignUp 
+                  ? 'Create Account' 
+                  : 'Sign In'
+            }
           </button>
         </form>
-        <p className="text-center text-sm text-gray-600">
-          {isSignUp ? 'Already have an account?' : "Don't have an account?"}
-          <button
-            onClick={() => setIsSignUp(!isSignUp)}
-            className="text-blue-600 hover:text-blue-800 ml-1 font-medium"
-          >
-            {isSignUp ? 'Sign In' : 'Sign Up'}
-          </button>
-        </p>
+        <div className="text-center space-y-2">
+          {!isPasswordReset ? (
+            <>
+              <p className="text-sm text-gray-600">
+                {isSignUp ? 'Already have an account?' : "Don't have an account?"}
+                <button
+                  onClick={() => setIsSignUp(!isSignUp)}
+                  className="text-blue-600 hover:text-blue-800 ml-1 font-medium"
+                >
+                  {isSignUp ? 'Sign In' : 'Sign Up'}
+                </button>
+              </p>
+              
+              <p className="text-sm text-gray-600">
+                Forgot your password?
+                <button
+                  onClick={() => setIsPasswordReset(true)}
+                  className="text-blue-600 hover:text-blue-800 ml-1 font-medium"
+                >
+                  Reset it here
+                </button>
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-gray-600">
+              Remember your password?
+              <button
+                onClick={() => setIsPasswordReset(false)}
+                className="text-blue-600 hover:text-blue-800 ml-1 font-medium"
+              >
+                Back to Sign In
+              </button>
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -146,50 +194,104 @@ const sanitizeData = (data) => {
   });
 };
 
-// Shared data persistence functions (everyone sees the same data)
-const saveSharedData = async (data, userEmail, setSaveStatus = null) => {
+// New approach: Store each appointment as individual database record
+const saveAppointmentData = async (data, userEmail, fileName, setSaveStatus = null) => {
   try {
     if (setSaveStatus) setSaveStatus('💾 Saving...');
     
-    // Sanitize data to prevent Unicode escape sequence errors
+    // Sanitize data first
     const sanitizedData = sanitizeData(data);
     
-    console.log('🔍 Attempting to save shared data:', {
+    console.log('🔍 Attempting to save appointment data:', {
       originalLength: data?.length || 0,
       sanitizedLength: sanitizedData?.length || 0,
       dataType: typeof sanitizedData,
       uploadedBy: userEmail,
+      fileName: fileName,
       timestamp: new Date().toISOString()
     });
     
-    // First, clear any existing shared data (we only want one dataset)
-    await supabase.from('shared_appointments').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    // Generate a dataset ID for this upload
+    const datasetId = crypto.randomUUID();
     
-    // Insert the new shared data (using sanitized data)
-    const { error, data: result } = await supabase
-      .from('shared_appointments')
+    // First, clear any existing appointments (for shared model)
+    await supabase.from('appointments').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    await supabase.from('appointment_datasets').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    
+    // Create dataset record
+    const { error: datasetError } = await supabase
+      .from('appointment_datasets')
       .insert({
-        data: sanitizedData,
+        id: datasetId,
+        name: fileName || 'Uploaded Data',
         uploaded_by: (await supabase.auth.getUser()).data.user?.id,
         uploaded_by_email: userEmail,
-        updated_at: new Date().toISOString()
-      })
-      .select();
-    
-    if (error) {
-      console.error('❌ Supabase error details:', {
-        message: error.message,
-        details: error.details,
-        hint: error.hint,
-        code: error.code
+        total_records: sanitizedData.length
       });
-      throw error;
+    
+    if (datasetError) throw datasetError;
+    
+    // Get current user ID once
+    const currentUser = await supabase.auth.getUser();
+    const currentUserId = currentUser.data.user?.id;
+    
+    // Transform array data into individual appointment records
+    const appointmentRecords = sanitizedData.map(row => {
+      // Parse Greek date
+      const parseGreekDate = (dateStr) => {
+        if (!dateStr) return null;
+        try {
+          const cleaned = dateStr.toString().trim();
+          const [day, month, year] = cleaned.split('/');
+          if (day && month && year) {
+            return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+          }
+        } catch (e) {
+          console.warn('Date parsing failed for:', dateStr);
+        }
+        return null;
+      };
+      
+      return {
+        dataset_id: datasetId,
+        user_name: row['Χρήστης δημιουργίας'] || row['Χρήστης_δημιουργίας'] || row['User'] || '',
+        store_name: row['Υποκατάστημα'] || row['Store'] || row['Κατάστημα'] || '',
+        creation_date: parseGreekDate(row['Ημερομηνία δημιουργίας'] || row['Date'] || row['Ημερομηνία']),
+        creation_date_text: row['Ημερομηνία δημιουργίας'] || row['Date'] || row['Ημερομηνία'] || '',
+        source_type: row['Source Type'] || row['Source'] || '',
+        uploaded_by: currentUserId,
+        uploaded_by_email: userEmail
+      };
+    }).filter(record => record.user_name && record.creation_date_text); // Only valid records
+    
+    console.log('📊 Transformed records:', appointmentRecords.length, 'valid appointments');
+    console.log('📋 Sample record:', appointmentRecords[0]);
+    
+    // Insert appointments in batches (Supabase handles up to 1000 records per batch)
+    const batchSize = 1000;
+    let insertedCount = 0;
+    
+    for (let i = 0; i < appointmentRecords.length; i += batchSize) {
+      const batch = appointmentRecords.slice(i, i + batchSize);
+      
+      const { error: insertError, data: insertResult } = await supabase
+        .from('appointments')
+        .insert(batch)
+        .select('id');
+      
+      if (insertError) {
+        console.error('❌ Batch insert error:', insertError);
+        throw insertError;
+      }
+      
+      insertedCount += insertResult.length;
+      console.log(`📁 Inserted batch ${Math.floor(i/batchSize) + 1}: ${insertResult.length} records`);
     }
     
-    console.log('📁 Shared data saved successfully!', result);
+    console.log('📁 Successfully saved all appointment data!', insertedCount, 'records');
     
     if (setSaveStatus) {
-      setSaveStatus('✅ Saved for everyone');
+      setSaveStatus(`✅ Saved ${insertedCount} appointments for everyone`);
       setTimeout(() => setSaveStatus(''), 2000);
     }
     
@@ -219,24 +321,49 @@ const loadSharedData = async () => {
   try {
     console.log('🔍 Loading shared data for all users...');
     
+    // Get all appointments with their dataset info
     const { data, error } = await supabase
-      .from('shared_appointments')
-      .select('data, uploaded_by_email, created_at')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
-    
-    if (error && error.code !== 'PGRST116') {
+      .from('appointments')
+      .select(`
+        *,
+        appointment_datasets (
+          name,
+          uploaded_at,
+          uploaded_by_email
+        )
+      `)
+      .order('created_at', { ascending: false });
+
+    if (error) {
       console.error('❌ Load error:', error);
       throw error;
     }
-    
-    const result = data?.data || [];
-    const uploadedBy = data?.uploaded_by_email || 'Unknown';
-    const uploadedAt = data?.created_at ? new Date(data.created_at).toLocaleDateString() : 'Unknown';
-    
-    console.log('📊 Loaded shared data:', result.length, 'records, uploaded by:', uploadedBy);
-    return { data: result, uploadedBy, uploadedAt };
+
+    if (data && data.length > 0) {
+      // Transform back to the original format for compatibility
+      const transformedData = data.map(record => ({
+        'Χρήστης δημιουργίας': record.user_name,
+        'Υποκατάστημα': record.store_name,
+        'Ημερομηνία δημιουργίας': record.creation_date_text,
+        'Source Type': record.source_type || '',
+        // Add metadata
+        _dataset_name: record.appointment_datasets?.name,
+        _uploaded_at: record.appointment_datasets?.uploaded_at,
+        _uploaded_by: record.appointment_datasets?.uploaded_by_email
+      }));
+
+      // Get the most recent upload info
+      const mostRecentUpload = data[0].appointment_datasets;
+      const uploadedBy = mostRecentUpload?.uploaded_by_email || 'Unknown';
+      const uploadedAt = mostRecentUpload?.uploaded_at ? 
+        new Date(mostRecentUpload.uploaded_at).toLocaleDateString() : 'Unknown';
+      
+      console.log('📊 Loaded shared data:', data.length, 'records, most recent upload by:', uploadedBy);
+      return { data: transformedData, uploadedBy, uploadedAt };
+    } else {
+      console.log('📊 No shared data found');
+      return { data: [], uploadedBy: null, uploadedAt: null };
+    }
   } catch (error) {
     console.error('❌ Error loading shared data:', error);
     return { data: [], uploadedBy: null, uploadedAt: null };
@@ -247,12 +374,21 @@ const clearSharedData = async (setSaveStatus = null) => {
   try {
     if (setSaveStatus) setSaveStatus('🗑️ Clearing...');
     
-    const { error } = await supabase
-      .from('shared_appointments')
+    // Delete all appointments (will cascade to delete datasets if needed)
+    const { error: appointmentsError } = await supabase
+      .from('appointments')
       .delete()
       .neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all records
     
-    if (error) throw error;
+    if (appointmentsError) throw appointmentsError;
+    
+    // Delete all datasets
+    const { error: datasetsError } = await supabase
+      .from('appointment_datasets')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all records
+    
+    if (datasetsError) throw datasetsError;
     
     console.log('🗑️ Shared data cleared successfully');
     
@@ -270,6 +406,129 @@ const clearSharedData = async (setSaveStatus = null) => {
       setTimeout(() => setSaveStatus(''), 3000);
     }
     
+    return false;
+  }
+};
+
+// Create a backup of current data
+const createDataBackup = async (data, userEmail, backupName, isAutoBackup = false, setSaveStatus = null) => {
+  try {
+    if (setSaveStatus) setSaveStatus('💾 Creating backup...');
+    
+    const { data: result, error } = await supabase
+      .from('appointment_backups')
+      .insert({
+        backup_name: backupName || `Backup ${new Date().toLocaleString()}`,
+        backup_data: data,
+        backed_up_by: (await supabase.auth.getUser()).data.user?.id,
+        backed_up_by_email: userEmail,
+        auto_backup: isAutoBackup
+      })
+      .select();
+    
+    if (error) throw error;
+    
+    console.log('💾 Backup created successfully:', result[0].id);
+    
+    if (setSaveStatus) {
+      setSaveStatus('✅ Backup created');
+      setTimeout(() => setSaveStatus(''), 2000);
+    }
+    
+    return result[0];
+  } catch (error) {
+    console.error('❌ Backup creation failed:', error);
+    if (setSaveStatus) {
+      setSaveStatus(`❌ Backup failed: ${error.message}`);
+      setTimeout(() => setSaveStatus(''), 3000);
+    }
+    return null;
+  }
+};
+
+// List all available backups
+const getDataBackups = async () => {
+  try {
+    const { data, error } = await supabase
+      .from('appointment_backups')
+      .select('*')
+      .order('created_at', { ascending: false });
+    
+    if (error) throw error;
+    return data || [];
+  } catch (error) {
+    console.error('❌ Error fetching backups:', error);
+    return [];
+  }
+};
+
+// Restore data from a backup
+const restoreFromBackup = async (backupId, userEmail, setSaveStatus = null) => {
+  try {
+    if (setSaveStatus) setSaveStatus('🔄 Restoring from backup...');
+    
+    // Get the backup data
+    const { data: backup, error: backupError } = await supabase
+      .from('appointment_backups')
+      .select('backup_data, backup_name')
+      .eq('id', backupId)
+      .single();
+    
+    if (backupError) throw backupError;
+    
+    // Clear current data
+    await clearSharedData();
+    
+    // Restore the backup data using the same save function
+    const success = await saveAppointmentData(
+      backup.backup_data, 
+      userEmail, 
+      `Restored: ${backup.backup_name}`,
+      setSaveStatus
+    );
+    
+    if (success) {
+      console.log('🔄 Data restored successfully from backup');
+      return true;
+    } else {
+      throw new Error('Failed to restore backup data');
+    }
+  } catch (error) {
+    console.error('❌ Restore failed:', error);
+    if (setSaveStatus) {
+      setSaveStatus(`❌ Restore failed: ${error.message}`);
+      setTimeout(() => setSaveStatus(''), 3000);
+    }
+    return false;
+  }
+};
+
+// Delete a backup
+const deleteBackup = async (backupId, setSaveStatus = null) => {
+  try {
+    if (setSaveStatus) setSaveStatus('🗑️ Deleting backup...');
+    
+    const { error } = await supabase
+      .from('appointment_backups')
+      .delete()
+      .eq('id', backupId);
+    
+    if (error) throw error;
+    
+    console.log('🗑️ Backup deleted successfully');
+    
+    if (setSaveStatus) {
+      setSaveStatus('✅ Backup deleted');
+      setTimeout(() => setSaveStatus(''), 2000);
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('❌ Delete backup failed:', error);
+    if (setSaveStatus) {
+      setSaveStatus(`❌ Delete failed: ${error.message}`);
+      setTimeout(() => setSaveStatus(''), 3000);
+    }
     return false;
   }
 };
@@ -442,6 +701,10 @@ const App = () => {
   // Shared data tracking
   const [dataUploadedBy, setDataUploadedBy] = useState('');
   const [dataUploadedAt, setDataUploadedAt] = useState('');
+  
+  // Backup management state
+  const [backups, setBackups] = useState([]);
+  const [showBackupManager, setShowBackupManager] = useState(false);
   
   // File input ref
   const fileInputRef = useRef(null);
@@ -923,6 +1186,9 @@ const App = () => {
           setLoading(false);
         }
       });
+      
+      // Load backups when user logs in
+      loadBackups();
     }
   }, [user]);
 
@@ -985,46 +1251,145 @@ const App = () => {
     }
   };
 
-  // Clear/Delete shared data function
+  // Clear/Delete shared data function with automatic backup
   const handleClearData = async () => {
+    if (!user || rawData.length === 0) {
+      alert('No data to clear');
+      return;
+    }
+    
     const confirmed = window.confirm(
-      '⚠️ Are you sure you want to clear all shared data?\n\nThis will:\n• Clear all charts and data for EVERYONE\n• Delete the shared data from the cloud\n• All users will see empty data\n• This action cannot be undone\n\nClick OK to proceed or Cancel to keep the data.'
+      '⚠️ Are you sure you want to clear all shared data?\n\n' +
+      'This will:\n' +
+      '• Create an automatic backup first\n' +
+      '• Clear all charts and data for EVERYONE\n' +
+      '• Delete the shared data from the cloud\n' +
+      '• All users will see empty data\n\n' +
+      'You can restore from the backup later if needed.\n\n' +
+      'Click OK to proceed or Cancel to keep the data.'
     );
     
     if (confirmed) {
       try {
-        // Clear local state
-        setRawData([]);
-        setProcessedData({
-          appointmentsByUser: [],
-          appointmentsBySource: [],
-          appointmentsOverTime: [],
-          appointmentsByStore: [],
-        });
-        setUniqueSources([]);
-        setUniqueUsers([]);
-        setIncludedUsers(new Set());
-        setUploadedFileName('');
-        setSelectedSource(null);
-        setSelectedUser(null);
-        setStartDate(null);
-        setEndDate(null);
-        setDataUploadedBy('');
-        setDataUploadedAt('');
+        // Create automatic backup before clearing
+        console.log('💾 Creating automatic backup before clearing...');
+        const backup = await createDataBackup(
+          rawData, 
+          user.email, 
+          `Auto-backup before clear ${new Date().toLocaleString()}`, 
+          true, 
+          setSaveStatus
+        );
         
-        // Delete shared data from cloud
-        if (user) {
+        if (backup) {
+          console.log('💾 Auto-backup created successfully, proceeding with clear...');
+          
+          // Clear local state
+          setRawData([]);
+          setProcessedData({
+            appointmentsByUser: [],
+            appointmentsBySource: [],
+            appointmentsOverTime: [],
+            appointmentsByStore: [],
+          });
+          setUniqueSources([]);
+          setUniqueUsers([]);
+          setIncludedUsers(new Set());
+          setUploadedFileName('');
+          setSelectedSource(null);
+          setSelectedUser(null);
+          setStartDate(null);
+          setEndDate(null);
+          setDataUploadedBy('');
+          setDataUploadedAt('');
+          
+          // Delete shared data from cloud
           const success = await clearSharedData(setSaveStatus);
           if (success) {
-            console.log('🗑️ Shared data cleared successfully for everyone');
+            console.log('🗑️ Data cleared with backup created');
+            alert('✅ Data cleared successfully! An automatic backup was created and can be restored from the Backup Manager.');
+            loadBackups(); // Refresh backup list
+          }
+        } else {
+          const proceedAnyway = window.confirm(
+            '⚠️ Failed to create backup. Do you still want to clear the data?\n\n' +
+            'WARNING: Without a backup, this data will be permanently lost!'
+          );
+          
+          if (proceedAnyway) {
+            // Proceed without backup - existing logic
+            setRawData([]);
+            setProcessedData({
+              appointmentsByUser: [],
+              appointmentsBySource: [],
+              appointmentsOverTime: [],
+              appointmentsByStore: [],
+            });
+            setUniqueSources([]);
+            setUniqueUsers([]);
+            setIncludedUsers(new Set());
+            setUploadedFileName('');
+            setSelectedSource(null);
+            setSelectedUser(null);
+            setStartDate(null);
+            setEndDate(null);
+            setDataUploadedBy('');
+            setDataUploadedAt('');
+            
+            const success = await clearSharedData(setSaveStatus);
+            if (success) {
+              console.log('🗑️ Data cleared without backup');
+            }
           }
         }
-        
       } catch (error) {
-        console.error('❌ Error clearing shared data:', error);
-        alert('Error clearing shared data from cloud. Local data has been cleared.');
+        console.error('❌ Error during clear with backup:', error);
+        alert('Error during clear operation. Data has been preserved.');
       }
     }
+  };
+
+  // Backup management functions
+  const handleCreateBackup = async () => {
+    if (!user || rawData.length === 0) {
+      alert('No data to backup');
+      return;
+    }
+    
+    const backupName = prompt('Enter backup name:', `Backup ${new Date().toLocaleDateString()}`);
+    if (!backupName) return;
+    
+    const backup = await createDataBackup(rawData, user.email, backupName, false, setSaveStatus);
+    if (backup) {
+      alert('✅ Backup created successfully!');
+      loadBackups(); // Refresh backup list
+    }
+  };
+
+  const handleRestoreBackup = async (backupId, backupName) => {
+    const confirmed = window.confirm(
+      `⚠️ Are you sure you want to restore from "${backupName}"?\n\n` +
+      `This will:\n` +
+      `• Replace ALL current data for EVERYONE\n` +
+      `• Delete the current shared data\n` +
+      `• Restore data from the selected backup\n` +
+      `• This action cannot be undone\n\n` +
+      `Click OK to restore or Cancel to keep current data.`
+    );
+    
+    if (confirmed) {
+      const success = await restoreFromBackup(backupId, user.email, setSaveStatus);
+      if (success) {
+        alert('✅ Data restored successfully!');
+        // Reload the page to show restored data
+        window.location.reload();
+      }
+    }
+  };
+
+  const loadBackups = async () => {
+    const backupList = await getDataBackups();
+    setBackups(backupList);
   };
 
   // Fetch the CSV data on component mount (only if user is not logged in)
@@ -1381,6 +1746,90 @@ const App = () => {
               Supports .xlsx, .xls, and .csv files with columns: Χρήστης δημιουργίας, Υποκατάστημα, Ημερομηνία δημιουργίας, Source Type
             </p>
           </div>
+        </div>
+
+        {/* Backup Management Section */}
+        <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-gray-800 flex items-center">
+              🗂️ Backup Manager
+            </h3>
+            <div className="flex space-x-2">
+              <button
+                onClick={handleCreateBackup}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-300 disabled:opacity-50"
+                disabled={!user || rawData.length === 0}
+              >
+                💾 Create Backup
+              </button>
+              <button
+                onClick={() => setShowBackupManager(!showBackupManager)}
+                className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors duration-300"
+              >
+                {showBackupManager ? 'Hide' : 'Show'} Backups
+              </button>
+            </div>
+          </div>
+          
+          <div className="text-sm text-gray-600 mb-4">
+            <p>💡 Backups protect against accidental data loss. An automatic backup is created before clearing data.</p>
+          </div>
+          
+          {showBackupManager && (
+            <div className="border rounded-lg p-4">
+              <h4 className="font-medium text-gray-800 mb-3">Available Backups ({backups.length})</h4>
+              
+              {backups.length === 0 ? (
+                <p className="text-gray-500 text-center py-4">
+                  No backups available. Create your first backup above.
+                </p>
+              ) : (
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {backups.map((backup) => (
+                    <div key={backup.id} className="flex items-center justify-between p-3 border rounded-lg bg-gray-50">
+                      <div className="flex-1">
+                        <div className="font-medium text-gray-800">
+                          {backup.backup_name}
+                          {backup.auto_backup && <span className="ml-2 text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">AUTO</span>}
+                        </div>
+                        <div className="text-sm text-gray-600">
+                          Created: {new Date(backup.created_at).toLocaleString()}
+                        </div>
+                        <div className="text-sm text-gray-600">
+                          By: {backup.backed_up_by_email}
+                        </div>
+                        <div className="text-sm text-gray-600">
+                          Records: {Array.isArray(backup.backup_data) ? backup.backup_data.length : 'Unknown'}
+                        </div>
+                      </div>
+                      <div className="flex space-x-2">
+                        <button
+                          onClick={() => handleRestoreBackup(backup.id, backup.backup_name)}
+                          className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700 transition-colors"
+                        >
+                          🔄 Restore
+                        </button>
+                        <button
+                          onClick={async () => {
+                            const confirmed = window.confirm(`Delete backup "${backup.backup_name}"?`);
+                            if (confirmed) {
+                              const success = await deleteBackup(backup.id, setSaveStatus);
+                              if (success) {
+                                loadBackups(); // Refresh list
+                              }
+                            }
+                          }}
+                          className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 transition-colors"
+                        >
+                          🗑️ Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Enhanced Filters Section */}
