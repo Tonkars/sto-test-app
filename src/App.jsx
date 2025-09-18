@@ -1196,9 +1196,9 @@ const App = () => {
         setIncludedUsers(new Set(uniqueUsersList)); // Include all users by default
         setLoading(false);
         
-        // Immediately save uploaded data as shared data
+        // Save uploaded data immediately (this makes sense - user just uploaded)
         if (user && validData.length > 0) {
-          console.log('📁 Immediately saving uploaded data as shared data...');
+          console.log('📁 Saving uploaded data to database...');
           try {
             const success = await saveAppointmentData(validData, user.email, file.name, setSaveStatus);
             if (success) {
@@ -1206,6 +1206,9 @@ const App = () => {
               setDataUploadedAt(new Date().toLocaleDateString());
               setUploadedFileName(`${file.name} (uploaded by ${user.email})`);
               console.log('✅ File upload and save successful');
+              
+              // Check if we need to create a daily backup after successful upload
+              await checkAndCreateDailyBackup();
             } else {
               console.log('⚠️ File uploaded but save failed');
               alert('File uploaded successfully but could not save to cloud. You can try manual save.');
@@ -1277,17 +1280,43 @@ const App = () => {
     }
   }, [user]);
 
-  // Auto-save shared data when it changes
+  // Smart daily backup check when user logs in
   useEffect(() => {
     if (user && rawData.length > 0) {
-      const saveTimer = setTimeout(() => {
-        console.log('💾 Auto-saving shared data...');
-        saveAppointmentData(rawData, user.email, uploadedFileName || 'Auto Save', setSaveStatus);
-      }, 3000); // Save 3 seconds after data changes
-
-      return () => clearTimeout(saveTimer);
+      checkAndCreateDailyBackup();
     }
-  }, [user, rawData]);
+  }, [user]); // Only run when user changes, not when data changes
+
+  // Check if we need to create a daily backup
+  const checkAndCreateDailyBackup = async () => {
+    try {
+      const today = new Date();
+      const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      
+      // Check if we already have an auto-backup today
+      const { data: todayBackups } = await supabase
+        .from('appointment_backups')
+        .select('id')
+        .eq('auto_backup', true)
+        .gte('created_at', todayStart.toISOString())
+        .limit(1);
+      
+      if (!todayBackups || todayBackups.length === 0) {
+        console.log('📅 Creating daily auto-backup...');
+        await createDataBackup(
+          rawData, 
+          user.email, 
+          `Daily Auto-Backup ${today.toLocaleDateString()}`, 
+          true
+        );
+        console.log('✅ Daily auto-backup created');
+      } else {
+        console.log('📅 Daily auto-backup already exists for today');
+      }
+    } catch (error) {
+      console.warn('⚠️ Daily backup check failed:', error);
+    }
+  };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -1314,11 +1343,11 @@ const App = () => {
     }
     
     try {
-      // Show data info before saving
-      console.log('📊 Preparing to save data:', {
+      console.log('📊 Manual save requested by user');
+      console.log('📊 Data to save:', {
         totalRecords: rawData.length,
-        columns: Object.keys(rawData[0] || {}),
-        sampleRecord: rawData[0]
+        fileName: uploadedFileName,
+        user: user.email
       });
       
       const success = await saveAppointmentData(rawData, user.email, uploadedFileName || 'Manual Save', setSaveStatus);
@@ -1326,7 +1355,10 @@ const App = () => {
         setDataUploadedBy(user.email);
         setDataUploadedAt(new Date().toLocaleDateString());
         console.log('✅ Manual save successful');
-        alert('✅ Data saved successfully for everyone!');
+        alert('✅ Data saved successfully and shared with everyone!');
+        
+        // Check if we need daily backup after manual save
+        await checkAndCreateDailyBackup();
       } else {
         alert('❌ Failed to save data. Please check the console for details.');
       }
