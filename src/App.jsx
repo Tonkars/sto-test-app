@@ -222,49 +222,76 @@ const sanitizeData = (data) => {
 };
 
 // New approach: Store each appointment as individual database record
-const saveAppointmentData = async (data, userEmail, fileName, setSaveStatus = null) => {
-  try {
-    if (setSaveStatus) setSaveStatus('💾 Saving...');
-    
-    // Sanitize data first
-    const sanitizedData = sanitizeData(data);
-    
-    console.log('🔍 Attempting to save appointment data:', {
-      originalLength: data?.length || 0,
-      sanitizedLength: sanitizedData?.length || 0,
-      dataType: typeof sanitizedData,
-      uploadedBy: userEmail,
-      fileName: fileName,
-      timestamp: new Date().toISOString()
-    });
-    
-    // Generate a dataset ID for this upload
-    const datasetId = crypto.randomUUID();
-    
-    // First, clear any existing appointments (for shared model)
-    console.log('🗑️ Clearing existing appointments and datasets...');
-    await supabase.from('appointments').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    await supabase.from('appointment_datasets').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    
-    // Create dataset record first
-    console.log('📁 Creating dataset record with ID:', datasetId);
-    const { error: datasetError, data: datasetResult } = await supabase
-      .from('appointment_datasets')
-      .insert({
-        id: datasetId,
-        name: fileName || 'Uploaded Data',
-        uploaded_by: (await supabase.auth.getUser()).data.user?.id,
-        uploaded_by_email: userEmail,
-        record_count: sanitizedData.length
-      })
-      .select();
-    
-    if (datasetError) {
-      console.error('❌ Dataset creation failed:', datasetError);
-      throw datasetError;
-    }
-    
-    console.log('✅ Dataset created successfully:', datasetResult[0]);
+const saveAppointmentData = async (data, userEmail, fileName, setSaveStatus = null, maxRetries = 3) => {
+  let attempt = 0;
+  let lastError = null;
+  
+  // Retry logic with exponential backoff
+  while (attempt < maxRetries) {
+    try {
+      attempt++;
+      const isRetry = attempt > 1;
+      
+      if (setSaveStatus) {
+        if (isRetry) {
+          setSaveStatus(`💾 Retry ${attempt}/${maxRetries}...`);
+        } else {
+          setSaveStatus('💾 Saving...');
+        }
+      }
+      
+      if (isRetry) {
+        console.log(`🔄 Retry attempt ${attempt}/${maxRetries} for save operation`);
+        // Wait before retry (exponential backoff: 1s, 2s, 4s...)
+        const waitTime = Math.pow(2, attempt - 1) * 1000;
+        console.log(`⏱️ Waiting ${waitTime}ms before retry...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      }
+      
+      // Sanitize data first
+      const sanitizedData = sanitizeData(data);
+      
+      console.log('🔍 Attempting to save appointment data:', {
+        originalLength: data?.length || 0,
+        sanitizedLength: sanitizedData?.length || 0,
+        dataType: typeof sanitizedData,
+        uploadedBy: userEmail,
+        fileName: fileName,
+        attempt: attempt,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Generate a dataset ID for this upload
+      const datasetId = crypto.randomUUID();
+      
+      // First, clear any existing appointments (for shared model)
+      console.log('🗑️ Clearing existing appointments and datasets...');
+      await supabase.from('appointments').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await supabase.from('appointment_datasets').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      
+      // Add a small delay after clearing to ensure database consistency
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Create dataset record first
+      const datasetName = isRetry ? `${fileName || 'Uploaded Data'} (Retry ${attempt})` : fileName || 'Uploaded Data';
+      console.log('📁 Creating dataset record with ID:', datasetId);
+      const { error: datasetError, data: datasetResult } = await supabase
+        .from('appointment_datasets')
+        .insert({
+          id: datasetId,
+          name: datasetName,
+          uploaded_by: (await supabase.auth.getUser()).data.user?.id,
+          uploaded_by_email: userEmail,
+          record_count: sanitizedData.length
+        })
+        .select();
+      
+      if (datasetError) {
+        console.error(`❌ Dataset creation failed (attempt ${attempt}):`, datasetError);
+        throw datasetError;
+      }
+      
+      console.log('✅ Dataset created successfully:', datasetResult[0]);
     
     // Get current user ID once
     const currentUser = await supabase.auth.getUser();
@@ -332,25 +359,77 @@ const saveAppointmentData = async (data, userEmail, fileName, setSaveStatus = nu
     
     console.log(`📁 Starting batch insertion for ${validRecords.length} records in batches of ${batchSize}`);
     
+    // Ensure we process ALL batches, not just the first one
     for (let i = 0; i < validRecords.length; i += batchSize) {
       const batch = validRecords.slice(i, i + batchSize);
       const batchNumber = Math.floor(i/batchSize) + 1;
       const totalBatches = Math.ceil(validRecords.length / batchSize);
       
-      console.log(`📦 Processing batch ${batchNumber}/${totalBatches}: ${batch.length} records (${i + 1}-${i + batch.length})`);
+      console.log(`📦 Processing batch ${batchNumber}/${totalBatches}: ${batch.length} records (${i + 1}-${Math.min(i + batch.length, validRecords.length)})`);
       
-      const { error: insertError, data: insertResult } = await supabase
-        .from('appointments')
-        .insert(batch)
-        .select('id');
+      // Retry logic for individual batches
+      let batchSuccess = false;
+      let batchAttempts = 0;
+      const maxBatchRetries = 2;
       
-      if (insertError) {
-        console.error(`❌ Batch ${batchNumber} insert error:`, insertError);
-        throw insertError;
+      while (!batchSuccess && batchAttempts < maxBatchRetries) {
+        batchAttempts++;
+        try {
+          if (batchAttempts > 1) {
+            console.log(`🔄 Retrying batch ${batchNumber}, attempt ${batchAttempts}/${maxBatchRetries}`);
+            // Small delay before retry
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+          
+          // Batch already has dataset_id from the mapping above, just insert directly
+          const { error: insertError, data: insertResult } = await supabase
+            .from('appointments')
+            .insert(batch)
+            .select('id');
+          
+          if (insertError) {
+            console.error(`❌ Batch ${batchNumber} insert error (attempt ${batchAttempts}):`, insertError);
+            console.error('❌ Failed batch data sample:', batch[0]);
+            
+            if (batchAttempts >= maxBatchRetries) {
+              throw insertError;
+            }
+            continue; // Try again
+          }
+          
+          insertedCount += insertResult.length;
+          console.log(`✅ Batch ${batchNumber} completed: ${insertResult.length} records inserted`);
+          console.log(`📊 Progress: ${insertedCount}/${validRecords.length} total records inserted`);
+          batchSuccess = true;
+          
+        } catch (error) {
+          if (batchAttempts >= maxBatchRetries) {
+            console.error(`❌ Batch ${batchNumber} failed after ${maxBatchRetries} attempts`);
+            throw error;
+          }
+        }
       }
       
-      insertedCount += insertResult.length;
-      console.log(`✅ Batch ${batchNumber} completed: ${insertResult.length} records inserted`);
+      // Add a small delay between batches to avoid overwhelming the database
+      if (batchNumber < totalBatches) {
+        await new Promise(resolve => setTimeout(resolve, 200)); // 200ms delay
+      }
+    }
+    
+    console.log('📁 Batch processing completed!');
+    console.log(`📊 Final summary: ${insertedCount} records inserted out of ${validRecords.length} valid records`);
+    
+    // Verify all records were inserted by checking the database
+    const { data: verifyData, error: verifyError } = await supabase
+      .from('appointments')
+      .select('id', { count: 'exact' })
+      .eq('dataset_id', datasetId);
+    
+    if (!verifyError && verifyData) {
+      console.log(`✅ Database verification: ${verifyData.length} records found in database`);
+      if (verifyData.length !== validRecords.length) {
+        console.warn(`⚠️ Mismatch: Expected ${validRecords.length}, found ${verifyData.length} in database`);
+      }
     }
     
     console.log('📁 Successfully saved all appointment data!', insertedCount, 'records');
@@ -361,25 +440,43 @@ const saveAppointmentData = async (data, userEmail, fileName, setSaveStatus = nu
     }
     
     return true;
-  } catch (error) {
-    console.error('❌ Complete error details:', {
-      message: error.message,
-      stack: error.stack,
-      name: error.name,
-      dataLength: data?.length || 0
-    });
-    
-    if (setSaveStatus) {
-      if (error.message && error.message.includes('Unicode')) {
-        setSaveStatus(`❌ Data contains special characters that cannot be saved`);
-      } else {
-        setSaveStatus(`❌ Save failed: ${error.message}`);
+    } catch (error) {
+      lastError = error;
+      console.error(`❌ Save attempt ${attempt}/${maxRetries} failed:`, {
+        message: error.message,
+        stack: error.stack,
+        name: error.name,
+        dataLength: data?.length || 0,
+        attempt: attempt
+      });
+      
+      // If this was the last attempt, exit the retry loop
+      if (attempt >= maxRetries) {
+        console.error(`❌ All ${maxRetries} save attempts failed. Final error:`, error);
+        break;
       }
-      setTimeout(() => setSaveStatus(''), 5000);
+      
+      // For retryable errors, continue to next attempt
+      if (setSaveStatus) {
+        setSaveStatus(`❌ Attempt ${attempt} failed, retrying...`);
+      }
+      
+      // Continue to next retry attempt
+      continue;
     }
-    
-    return false;
   }
+  
+  // If we get here, all retries failed
+  if (setSaveStatus) {
+    if (lastError.message && lastError.message.includes('Unicode')) {
+      setSaveStatus(`❌ Data contains special characters that cannot be saved`);
+    } else {
+      setSaveStatus(`❌ Save failed after ${maxRetries} attempts: ${lastError.message}`);
+    }
+    setTimeout(() => setSaveStatus(''), 5000);
+  }
+  
+  return false;
 };
 
 const loadSharedData = async () => {
@@ -619,20 +716,64 @@ const deleteBackup = async (backupId, setSaveStatus = null) => {
 };
 
 // Test Supabase connection
-const testSupabaseConnection = async () => {
+const testSupabaseConnection = async (showAlerts = true) => {
   try {
     console.log('🔍 Testing Supabase connection...');
-    const { data, error } = await supabase.auth.getUser();
     
-    if (error) {
-      console.error('❌ Auth test failed:', error);
+    // Test 1: Authentication
+    const { data: authData, error: authError } = await supabase.auth.getUser();
+    if (authError) {
+      console.error('❌ Auth test failed:', authError);
+      if (showAlerts) alert(`❌ Authentication test failed: ${authError.message}`);
       return false;
     }
     
-    console.log('✅ Supabase connection working, user:', data.user?.email || 'Not logged in');
+    // Test 2: Database read access
+    const { data: readData, error: readError } = await supabase
+      .from('appointments')
+      .select('id')
+      .limit(1);
+    
+    if (readError) {
+      console.error('❌ Database read test failed:', readError);
+      if (showAlerts) alert(`❌ Database read test failed: ${readError.message}`);
+      return false;
+    }
+    
+    // Test 3: Database write access (insert and delete a test record)
+    const testRecord = {
+      dataset_id: '00000000-0000-0000-0000-000000000000',
+      user_name: 'TEST',
+      store_name: 'TEST',
+      creation_date_text: 'TEST',
+      uploaded_by_email: authData.user?.email || 'test@test.com'
+    };
+    
+    const { data: writeData, error: writeError } = await supabase
+      .from('appointments')
+      .insert(testRecord)
+      .select('id');
+    
+    if (writeError) {
+      console.error('❌ Database write test failed:', writeError);
+      if (showAlerts) alert(`❌ Database write test failed: ${writeError.message}`);
+      return false;
+    }
+    
+    // Clean up test record
+    if (writeData && writeData[0]) {
+      await supabase
+        .from('appointments')
+        .delete()
+        .eq('id', writeData[0].id);
+    }
+    
+    console.log('✅ All Supabase tests passed!');
+    if (showAlerts) alert('✅ Connection test successful!\n\n✓ Authentication works\n✓ Database read access\n✓ Database write access');
     return true;
   } catch (error) {
     console.error('❌ Connection test failed:', error);
+    if (showAlerts) alert(`❌ Connection test failed: ${error.message}`);
     return false;
   }
 };
@@ -1343,6 +1484,16 @@ const App = () => {
     }
     
     try {
+      // Pre-save connection test
+      setSaveStatus('🔍 Testing connection...');
+      const connectionOk = await testSupabaseConnection(false); // Silent test
+      if (!connectionOk) {
+        setSaveStatus('❌ Connection test failed');
+        setTimeout(() => setSaveStatus(''), 3000);
+        alert('❌ Connection test failed. Please check your internet connection and try again.');
+        return;
+      }
+      
       console.log('📊 Manual save requested by user');
       console.log('📊 Data to save:', {
         totalRecords: rawData.length,
@@ -1360,7 +1511,7 @@ const App = () => {
         // Check if we need daily backup after manual save
         await checkAndCreateDailyBackup();
       } else {
-        alert('❌ Failed to save data. Please check the console for details.');
+        alert('❌ Failed to save data after multiple attempts. Please check your connection and try again.');
       }
     } catch (error) {
       console.error('❌ Manual save error:', error);
